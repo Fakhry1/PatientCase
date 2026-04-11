@@ -73,7 +73,7 @@
     descriptionLabel: 'Describe Your Medical Condition',
     descriptionPlaceholder: 'Write your main symptoms, complaint, or any important information that may help the doctor',
     submitBtn: 'Submit Consultation Request',
-    submitting: 'Submitting...',
+    submitting: 'Submitting....',
     formNote: 'Your medical consultation request will be sent to the system after reviewing the entered information.',
     successHeading: 'Your Request Was Sent Successfully!',
     successMsg: 'Your consultation request was submitted successfully and will be reviewed by the medical team.',
