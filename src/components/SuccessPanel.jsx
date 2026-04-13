@@ -6,8 +6,6 @@ export default function SuccessPanel({
   note,
   buttonText,
   onReset,
-  referenceLabel,
-  referenceValue,
   summaryItems = []
 }) {
   return (
@@ -15,13 +13,6 @@ export default function SuccessPanel({
       <div className="success-icon">{CHECKMARK}</div>
       <h3>{heading}</h3>
       <p>{message}</p>
-
-      {referenceValue ? (
-        <div className="success-reference-block">
-          <span>{referenceLabel}</span>
-          <code dir="ltr">{referenceValue}</code>
-        </div>
-      ) : null}
 
       {!!summaryItems.length && (
         <div className="success-summary">

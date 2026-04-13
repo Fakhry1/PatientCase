@@ -2,18 +2,21 @@ import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
 
 const PROXIED_PATHS = new Set(['/api/specialties', '/api/cases/webhook/case-created']);
+const DEFAULT_UPLOADTHING_PROXY_URL = 'https://telemedicine-dashboard.vercel.app/api/uploadthing';
+const FALLBACK_UPLOADTHING_PROXY_URL = 'https://doctor-telemedicine-server.vercel.app/api/uploadthing';
 
 function getProxyTarget(env) {
   return (env.API_REMOTE_BASE_URL || '').replace(/\/$/, '');
 }
 
 function buildUpstreamHeaders(req, env) {
+  const requestHeaders = req && typeof req.headers === 'object' && req.headers ? req.headers : {};
   const headers = {
-    accept: req.headers.accept || 'application/json'
+    accept: requestHeaders.accept || 'application/json'
   };
 
-  if (req.headers['content-type']) {
-    headers['content-type'] = req.headers['content-type'];
+  if (requestHeaders['content-type']) {
+    headers['content-type'] = requestHeaders['content-type'];
   }
 
   if (env.API_AUTH_HEADER && env.API_AUTH_VALUE) {
@@ -22,6 +25,26 @@ function buildUpstreamHeaders(req, env) {
 
   if (env.API_BEARER_TOKEN) {
     headers.Authorization = `Bearer ${env.API_BEARER_TOKEN}`;
+  }
+
+  return headers;
+}
+
+function buildUploadthingHeaders(req) {
+  const requestHeaders = req && typeof req.headers === 'object' && req.headers ? req.headers : {};
+  const headers = {
+    accept: requestHeaders.accept || '*/*'
+  };
+
+  if (requestHeaders['content-type']) {
+    headers['content-type'] = requestHeaders['content-type'];
+  }
+
+  for (const [name, value] of Object.entries(requestHeaders)) {
+    if (typeof value !== 'string') continue;
+    if (name.startsWith('x-uploadthing-')) {
+      headers[name] = value;
+    }
   }
 
   return headers;
@@ -40,11 +63,72 @@ async function readRequestBody(req) {
   return chunks.length ? Buffer.concat(chunks) : undefined;
 }
 
+function normalizeUploadthingResponsePayload(payload, queryString) {
+  if (!queryString.includes('actionType=upload')) {
+    return payload;
+  }
+
+  try {
+    const parsed = JSON.parse(payload);
+    if (!Array.isArray(parsed)) return payload;
+
+    const normalized = parsed.map((item) => {
+      if (!item || typeof item !== 'object') return item;
+      return {
+        ...item,
+        fileName: item.fileName || item.name,
+        fileUrl: item.fileUrl || item.url,
+        fields: item.fields && typeof item.fields === 'object' ? item.fields : {},
+      };
+    });
+
+    return JSON.stringify(normalized);
+  } catch {
+    return payload;
+  }
+}
+
+function isMissingUploadthingRoute(response) {
+  return response.status === 404 || response.status === 405;
+}
+
 function createApiProxyPlugin(env) {
   const target = getProxyTarget(env);
+  const uploadthingTarget = (env.UPLOADTHING_PROXY_URL || DEFAULT_UPLOADTHING_PROXY_URL).replace(/\/$/, '');
+  let activeUploadthingTarget = uploadthingTarget;
 
   async function handleProxy(req, res) {
     const requestPath = req.url?.split('?')[0] || '';
+    const queryString = req.url?.includes('?') ? req.url.slice(req.url.indexOf('?')) : '';
+
+    if (requestPath === '/api/uploadthing') {
+      const requestBody = await readRequestBody(req);
+      let upstreamResponse = await fetch(`${activeUploadthingTarget}${queryString}`, {
+        method: req.method,
+        headers: buildUploadthingHeaders(req),
+        body: requestBody
+      });
+
+      if (isMissingUploadthingRoute(upstreamResponse) && activeUploadthingTarget !== FALLBACK_UPLOADTHING_PROXY_URL) {
+        activeUploadthingTarget = FALLBACK_UPLOADTHING_PROXY_URL;
+        upstreamResponse = await fetch(`${FALLBACK_UPLOADTHING_PROXY_URL}${queryString}`, {
+          method: req.method,
+          headers: buildUploadthingHeaders(req),
+          body: requestBody
+        });
+      }
+
+      res.statusCode = upstreamResponse.status;
+
+      const contentType = upstreamResponse.headers.get('content-type');
+      if (contentType) {
+        res.setHeader('content-type', contentType);
+      }
+
+      const payload = await upstreamResponse.text();
+      res.end(normalizeUploadthingResponsePayload(payload, queryString));
+      return true;
+    }
 
     if (!target || !PROXIED_PATHS.has(requestPath)) {
       return false;

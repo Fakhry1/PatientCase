@@ -565,6 +565,55 @@ textarea {
   color: var(--primary-dark);
 }
 
+.attachment-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.attachment-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(99, 102, 241, 0.06);
+  border: 1px solid rgba(99, 102, 241, 0.15);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 0.82rem;
+}
+
+.attachment-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attachment-size {
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+.attachment-remove {
+  flex-shrink: 0;
+  border: 0;
+  background: transparent;
+  color: var(--destructive);
+  font-size: 0.78rem;
+  font-weight: 700;
+  padding: 0 4px;
+  cursor: pointer;
+}
+
+.attachment-remove:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 .submit-error {
   border: 1px solid rgba(220, 38, 38, 0.18);
   background: rgba(220, 38, 38, 0.06);

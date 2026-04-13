@@ -10,6 +10,7 @@ import { fetchSpecialties, submitConsultation } from './lib/api.js';
 import { buildWebhookPayload } from './lib/consultationPayload.js';
 import { getFullPhoneNumber, getPhoneError } from './lib/phone.js';
 import { mapSpecialties, translateSpecialtyName } from './lib/specialties.js';
+import { ATTACHMENT_LIMITS, formatBytes, uploadAttachments, validateAttachmentSelection } from './lib/attachments.js';
 
 const ARABIC_LABEL = '\u0627\u0644\u0639\u0631\u0628\u064a\u0629';
 const EMPTY_OPTION = '\u2014';
@@ -29,6 +30,9 @@ export default function App() {
   const [submitState, setSubmitState] = useState({ status: 'idle', message: '' });
   const [submitted, setSubmitted] = useState(false);
   const [submissionMeta, setSubmissionMeta] = useState({ reference: '', specialty: '', phone: '' });
+  const [attachmentFiles, setAttachmentFiles] = useState([]);
+  const [uploadedAttachmentsBySignature, setUploadedAttachmentsBySignature] = useState({});
+  const [isUploadingAttachments, setIsUploadingAttachments] = useState(false);
 
   const t = translations[language];
   const dir = language === 'ar' ? 'rtl' : 'ltr';
@@ -99,6 +103,66 @@ export default function App() {
     clearFieldMessage('phoneNumber');
   }
 
+  function getAttachmentSignature(file) {
+    return [file.name, file.size, file.lastModified].join(':');
+  }
+
+  async function preUploadAttachments(filesToUpload) {
+    if (!filesToUpload.length) return;
+
+    setIsUploadingAttachments(true);
+
+    try {
+      const uploaded = await uploadAttachments(filesToUpload);
+      setUploadedAttachmentsBySignature((current) => {
+        const next = { ...current };
+        filesToUpload.forEach((file, index) => {
+          const signature = getAttachmentSignature(file);
+          next[signature] = uploaded[index];
+        });
+        return next;
+      });
+      setFieldErrors((current) => ({ ...current, attachments: '' }));
+    } catch {
+      setFieldErrors((current) => ({ ...current, attachments: t.attachmentsUploadError }));
+    } finally {
+      setIsUploadingAttachments(false);
+    }
+  }
+
+  function handleAttachmentChange(event) {
+    const incoming = Array.from(event.target.files || []);
+    event.target.value = '';
+    const previousFiles = attachmentFiles;
+    const { nextFiles, error } = validateAttachmentSelection(attachmentFiles, incoming, t);
+    setAttachmentFiles(nextFiles);
+    setFieldErrors((current) => ({ ...current, attachments: error }));
+
+    if (error) return;
+
+    const known = new Set(previousFiles.map(getAttachmentSignature));
+    const newlyAdded = nextFiles.filter((file) => !known.has(getAttachmentSignature(file)));
+    preUploadAttachments(newlyAdded);
+  }
+
+  function handleAttachmentRemove(index) {
+    setAttachmentFiles((current) => {
+      const removed = current[index];
+      if (removed) {
+        const signature = getAttachmentSignature(removed);
+        setUploadedAttachmentsBySignature((mapped) => {
+          if (!mapped[signature]) return mapped;
+          const next = { ...mapped };
+          delete next[signature];
+          return next;
+        });
+      }
+
+      return current.filter((_, i) => i !== index);
+    });
+    setFieldErrors((current) => ({ ...current, attachments: '' }));
+  }
+
 
   function validateForm() {
     const errors = {};
@@ -124,7 +188,37 @@ export default function App() {
 
     try {
       setSubmitState({ status: 'loading', message: '' });
-      const payload = await buildWebhookPayload(form);
+
+      let attachments = [];
+      if (attachmentFiles.length > 0) {
+        const pendingFiles = attachmentFiles.filter((file) => !uploadedAttachmentsBySignature[getAttachmentSignature(file)]);
+        const mergedAttachments = { ...uploadedAttachmentsBySignature };
+
+        try {
+          if (pendingFiles.length > 0) {
+            setSubmitState({ status: 'loading', message: t.attachmentsUploading });
+            const uploaded = await uploadAttachments(pendingFiles);
+
+            pendingFiles.forEach((file, index) => {
+              mergedAttachments[getAttachmentSignature(file)] = uploaded[index];
+            });
+            setUploadedAttachmentsBySignature(mergedAttachments);
+          }
+
+          attachments = attachmentFiles
+            .map((file) => mergedAttachments[getAttachmentSignature(file)])
+            .filter(Boolean);
+
+          if (attachments.length !== attachmentFiles.length) {
+            throw new Error(t.attachmentsUploadError);
+          }
+        } catch (error) {
+          setSubmitState({ status: 'error', message: `Upload error: ${error?.message || t.attachmentsUploadError}` });
+          return;
+        }
+      }
+
+      const payload = await buildWebhookPayload(form, attachments);
       await submitConsultation(payload, t.submissionError);
 
       setSubmissionMeta({
@@ -137,13 +231,16 @@ export default function App() {
     } catch (error) {
       setSubmitState({
         status: 'error',
-        message: error.message || t.genericApiError,
+        message: `Submit error: ${error.message || t.genericApiError}`,
       });
     }
   }
 
   function resetForm() {
     setForm(initialForm);
+    setAttachmentFiles([]);
+    setUploadedAttachmentsBySignature({});
+    setIsUploadingAttachments(false);
     setFieldErrors({});
     setSubmitState({ status: 'idle', message: '' });
     setSubmitted(false);
@@ -166,7 +263,7 @@ export default function App() {
   const finalPhone = form.phoneNumber ? getFullPhoneNumber(form.countryCode, form.phoneNumber) : '';
   const finalPhoneDisplay = finalPhone || '...';
   const specialtyError = getSpecialtyErrorMessage(t.specialtyError, specialtyErrorDetail);
-  const canSubmit = submitState.status !== 'loading' && !loadingSpecialties && !specialtyErrorDetail;
+  const canSubmit = submitState.status !== 'loading' && !loadingSpecialties && !specialtyErrorDetail && !isUploadingAttachments;
 
   const successSummaryItems = [
     { label: t.successSpecialtyLabel, value: submissionMeta.specialty || '—' },
@@ -231,8 +328,6 @@ export default function App() {
               note={t.successNote}
               buttonText={t.createAnother}
               onReset={resetForm}
-              referenceLabel={t.successReferenceLabel}
-              referenceValue={submissionMeta.reference}
               summaryItems={successSummaryItems}
             />
           ) : (
@@ -322,6 +417,34 @@ export default function App() {
                     rows="5"
                   />
                   <div className="text-counter">{form.symptoms.trim().length} / 500</div>
+                </Field>
+
+                <Field label={t.attachmentsLabel} hint={fieldErrors.attachments ? '' : t.attachmentsHint} error={fieldErrors.attachments}>
+                  <input
+                    type="file"
+                    multiple
+                    accept={ATTACHMENT_LIMITS.accept}
+                    onChange={handleAttachmentChange}
+                    disabled={submitState.status === 'loading'}
+                  />
+                  {attachmentFiles.length > 0 && (
+                    <ul className="attachment-list">
+                      {attachmentFiles.map((file, i) => (
+                        <li key={`${file.name}-${file.size}-${file.lastModified}`} className="attachment-item">
+                          <span className="attachment-name">{file.name}</span>
+                          <span className="attachment-size">{formatBytes(file.size)}</span>
+                          <button
+                            type="button"
+                            className="attachment-remove"
+                            onClick={() => handleAttachmentRemove(i)}
+                            disabled={submitState.status === 'loading'}
+                          >
+                            {t.attachmentsRemove}
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
                 </Field>
               </SectionCard>
 
