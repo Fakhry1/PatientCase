@@ -3,10 +3,6 @@
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
   "rewrites": [
-    { "source": "/api/specialties", "destination": "/api/specialties" },
-    { "source": "/api/uploadthing", "destination": "/api/uploadthing" },
-    { "source": "/api/cases/webhook/case-created", "destination": "/api/cases/webhook/case-created" },
-    { "source": "/api/cases/:caseId/attachments", "destination": "/api/cases/[caseId]/attachments" },
-    { "source": "/(.*)", "destination": "/index.html" }
+    { "source": "/((?!api/).*)", "destination": "/index.html" }
   ]
 }
