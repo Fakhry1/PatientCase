@@ -1,5 +1,7 @@
 const MAX_ATTACHMENT_COUNT = 5;
 const MAX_ATTACHMENT_SIZE_BYTES = 5 * 1024 * 1024;
+const UPLOADTHING_ENDPOINT = '/api/uploadthing';
+const UPLOADTHING_SLUG = 'caseAttachmentUploader';
 const ALLOWED_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.webp', '.pdf', '.doc', '.docx'];
 const ALLOWED_MIME_TYPES = new Set([
   'image/jpeg',
@@ -86,22 +88,150 @@ export function validateAttachmentSelection(existingFiles, incomingFiles, t) {
   };
 }
 
-function readFileAsDataUrl(file) {
+async function parseErrorMessage(response, fallback) {
+  const text = await response.text();
+  if (!text) return fallback;
+
+  try {
+    const json = JSON.parse(text);
+    return json.message || json.error || fallback;
+  } catch {
+    return text;
+  }
+}
+
+async function requestPresignedUploads(files) {
+  const response = await fetch(`${UPLOADTHING_ENDPOINT}?actionType=upload&slug=${UPLOADTHING_SLUG}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-uploadthing-version': '6.12.0',
+      'x-uploadthing-fe-package': '@uploadthing/client'
+    },
+    body: JSON.stringify({
+      input: null,
+      files: files.map((file) => ({
+        name: file.name,
+        size: file.size,
+        type: file.type || 'application/octet-stream'
+      }))
+    })
+  });
+
+  if (!response.ok) {
+    throw new Error(await parseErrorMessage(response, 'Failed to request upload URLs.'));
+  }
+
+  const payload = await response.json();
+  if (!Array.isArray(payload)) {
+    throw new Error('Unexpected upload URL response shape.');
+  }
+
+  return payload;
+}
+
+async function uploadFileToPresignedTarget(file, target, onProgress) {
+  const fields = target?.fields && typeof target.fields === 'object' ? target.fields : null;
+
+  if (fields && Object.keys(fields).length > 0) {
+    const formData = new FormData();
+    Object.entries(fields).forEach(([key, value]) => formData.append(key, value));
+    formData.append('file', file);
+
+    const xhr = new XMLHttpRequest();
+
+    return new Promise((resolve, reject) => {
+      if (xhr.upload && onProgress) {
+        xhr.upload.addEventListener('progress', (event) => {
+          if (event.lengthComputable) {
+            const percentComplete = Math.round((event.loaded / event.total) * 100);
+            onProgress(percentComplete);
+          }
+        });
+      }
+
+      xhr.addEventListener('load', () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          resolve();
+        } else {
+          reject(new Error(`Failed to upload ${file.name}.`));
+        }
+      });
+
+      xhr.addEventListener('error', () => {
+        reject(new Error(`Failed to upload ${file.name}.`));
+      });
+
+      xhr.open('POST', target.url);
+      xhr.send(formData);
+    });
+  }
+
+  const formData = new FormData();
+  formData.append('file', file);
+
+  const xhr = new XMLHttpRequest();
+
   return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result);
-    reader.onerror = () => reject(new Error(`Failed to read file: ${file.name}`));
-    reader.readAsDataURL(file);
+    if (xhr.upload && onProgress) {
+      xhr.upload.addEventListener('progress', (event) => {
+        if (event.lengthComputable) {
+          const percentComplete = Math.round((event.loaded / event.total) * 100);
+          onProgress(percentComplete);
+        }
+      });
+    }
+
+    xhr.addEventListener('load', () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve();
+      } else {
+        reject(new Error(`Failed to upload ${file.name}.`));
+      }
+    });
+
+    xhr.addEventListener('error', () => {
+      reject(new Error(`Failed to upload ${file.name}.`));
+    });
+
+    xhr.open('PUT', target.url);
+    xhr.send(formData);
   });
 }
 
-export async function buildAttachmentPayloads(files) {
-  return Promise.all(
-    files.map(async (file) => ({
-      name: file.name,
-      type: file.type || 'application/octet-stream',
-      size: file.size,
-      content: await readFileAsDataUrl(file)
-    }))
+function buildUploadedAttachment(file, target) {
+  const url = target.fileUrl || target.appUrl || (target.key ? `https://utfs.io/f/${target.key}` : '');
+
+  if (!url) {
+    throw new Error('Upload completed without a file URL.');
+  }
+
+  return {
+    url,
+    fileName: target.fileName || target.name || file.name,
+    mimeType: file.type || 'application/octet-stream',
+    sizeBytes: file.size,
+    uploadResponse: target
+  };
+}
+
+export async function uploadAttachments(files, onFileProgress) {
+  if (!files.length) return [];
+
+  const targets = await requestPresignedUploads(files);
+
+  if (targets.length !== files.length) {
+    throw new Error('Upload service returned an invalid number of targets.');
+  }
+
+  const uploaded = await Promise.all(
+    files.map(async (file, index) => {
+      const target = targets[index];
+      const onProgress = onFileProgress ? (percent) => onFileProgress(index, percent) : undefined;
+      await uploadFileToPresignedTarget(file, target, onProgress);
+      return buildUploadedAttachment(file, target);
+    })
   );
+
+  return uploaded;
 }

@@ -30,6 +30,17 @@
 - `npm run test`
 - `npm run build`
 
+## تجهيز الإطلاق
+
+قبل النشر على Vercel تأكد من التالي:
+- ضبط المتغيرات: `API_REMOTE_BASE_URL`, `API_AUTH_HEADER`, `API_AUTH_VALUE`
+- إضافة `API_BEARER_TOKEN` فقط إذا كان الـ upstream يتطلب Bearer token
+- إضافة `UPLOADTHING_PROXY_URL` فقط إذا كان رفع الملفات يجب أن يمر عبر endpoint مختلف عن القيمة الافتراضية
+- التحقق من أن مسار `/api/uploadthing` يعمل في بيئة الإنتاج ويرجع استجابات JSON صحيحة
+- تنفيذ `npm run lint && npm run test && npm run build` محليًا أو ضمن CI قبل كل نشر
+
+إذا كانت بيئة الإنتاج تستخدم نفس القيم الموجودة في `.env.example` فيمكن نقلها مباشرة إلى Project Settings داخل Vercel بدون أي متغيرات `VITE_*`.
+
 ## قيود المرفقات الحالية
 
 - الحد الأقصى: 5 ملفات
