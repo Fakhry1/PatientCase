@@ -55,54 +55,59 @@ async function postAttachment(remoteBaseUrl, caseId, attachment, authHeaders) {
 }
 
 export default async function handler(req, res) {
-  const config = getProxyConfig();
-
-  if (!config.remoteBaseUrl) {
-    return res.status(500).json({ message: 'API proxy is not configured on the server.' });
-  }
-  if (req.method === 'OPTIONS') return res.status(204).end();
-
-  const requestBody = await readRequestBody(req);
-  let requestJson = null;
   try {
-    const bodyStr = typeof requestBody === 'string' ? requestBody : requestBody?.toString('utf8') || '';
-    if (bodyStr.trim()) requestJson = JSON.parse(bodyStr);
-  } catch { /* ignore */ }
+    const config = getProxyConfig();
 
-  // 1. Create the case via webhook
-  const upstreamResponse = await fetch(`${config.remoteBaseUrl}/cases/webhook/case-created`, {
-    method: req.method,
-    headers: buildProxyHeaders(req, config),
-    body: requestBody,
-  });
+    if (!config.remoteBaseUrl) {
+      return res.status(500).json({ message: 'API proxy is not configured on the server.' });
+    }
+    if (req.method === 'OPTIONS') return res.status(204).end();
 
-  res.setHeader('content-type', 'application/json');
-  const responseText = await upstreamResponse.text();
-  const contentType = upstreamResponse.headers.get('content-type') || '';
+    const requestBody = await readRequestBody(req);
+    let requestJson = null;
+    try {
+      const bodyStr = typeof requestBody === 'string' ? requestBody : requestBody?.toString('utf8') || '';
+      if (bodyStr.trim()) requestJson = JSON.parse(bodyStr);
+    } catch { /* ignore */ }
 
-  if (!upstreamResponse.ok || !contentType.includes('application/json')) {
-    return res.status(upstreamResponse.status).send(responseText);
+    // 1. Create the case via webhook
+    const upstreamResponse = await fetch(`${config.remoteBaseUrl}/cases/webhook/case-created`, {
+      method: req.method,
+      headers: buildProxyHeaders(req, config),
+      body: requestBody,
+    });
+
+    res.setHeader('content-type', 'application/json');
+    const responseText = await upstreamResponse.text();
+    const contentType = upstreamResponse.headers.get('content-type') || '';
+
+    if (!upstreamResponse.ok || !contentType.includes('application/json')) {
+      return res.status(upstreamResponse.status).send(responseText);
+    }
+
+    let responseJson;
+    try { responseJson = JSON.parse(responseText); }
+    catch { return res.status(upstreamResponse.status).send(responseText); }
+
+    // 2. Post attachments and merge into response
+    const caseId = responseJson?.case?.id;
+    const attachments = extractAttachments(requestJson);
+
+    if (caseId && attachments.length > 0) {
+      const authHeaders = {};
+      if (config.authHeader && config.authValue) authHeaders[config.authHeader] = config.authValue;
+      if (config.bearerToken) authHeaders.Authorization = `Bearer ${config.bearerToken}`;
+      const saved = await Promise.all(
+        attachments.map((a) => postAttachment(config.remoteBaseUrl, caseId, a, authHeaders))
+      );
+      if (responseJson.case) responseJson.case.attachments = saved.filter(Boolean);
+    } else if (responseJson?.case) {
+      responseJson.case.attachments = [];
+    }
+
+    return res.status(upstreamResponse.status).json(responseJson);
+  } catch (err) {
+    console.error('[case-created] unhandled error:', err);
+    return res.status(500).json({ message: err?.message || 'Internal server error' });
   }
-
-  let responseJson;
-  try { responseJson = JSON.parse(responseText); }
-  catch { return res.status(upstreamResponse.status).send(responseText); }
-
-  // 2. Post attachments and merge into response
-  const caseId = responseJson?.case?.id;
-  const attachments = extractAttachments(requestJson);
-
-  if (caseId && attachments.length > 0) {
-    const authHeaders = {};
-    if (config.authHeader && config.authValue) authHeaders[config.authHeader] = config.authValue;
-    if (config.bearerToken) authHeaders.Authorization = `Bearer ${config.bearerToken}`;
-    const saved = await Promise.all(
-      attachments.map((a) => postAttachment(config.remoteBaseUrl, caseId, a, authHeaders))
-    );
-    if (responseJson.case) responseJson.case.attachments = saved.filter(Boolean);
-  } else if (responseJson?.case) {
-    responseJson.case.attachments = [];
-  }
-
-  return res.status(upstreamResponse.status).json(responseJson);
 }
