@@ -105,7 +105,7 @@ async function requestPresignedUploads(files) {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'x-uploadthing-version': '6.13.3',
+      'x-uploadthing-version': '6.12.0',
       'x-uploadthing-fe-package': '@uploadthing/client'
     },
     body: JSON.stringify({
@@ -130,7 +130,7 @@ async function requestPresignedUploads(files) {
   return payload;
 }
 
-async function uploadFileToPresignedTarget(file, target) {
+async function uploadFileToPresignedTarget(file, target, onProgress) {
   const fields = target?.fields && typeof target.fields === 'object' ? target.fields : null;
 
   if (fields && Object.keys(fields).length > 0) {
@@ -138,33 +138,73 @@ async function uploadFileToPresignedTarget(file, target) {
     Object.entries(fields).forEach(([key, value]) => formData.append(key, value));
     formData.append('file', file);
 
-    const response = await fetch(target.url, {
-      method: 'POST',
-      body: formData
+    const xhr = new XMLHttpRequest();
+
+    return new Promise((resolve, reject) => {
+      if (xhr.upload && onProgress) {
+        xhr.upload.addEventListener('progress', (event) => {
+          if (event.lengthComputable) {
+            const percentComplete = Math.round((event.loaded / event.total) * 100);
+            onProgress(percentComplete);
+          }
+        });
+      }
+
+      xhr.addEventListener('load', () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          resolve();
+        } else {
+          reject(new Error(`Failed to upload ${file.name}.`));
+        }
+      });
+
+      xhr.addEventListener('error', () => {
+        reject(new Error(`Failed to upload ${file.name}.`));
+      });
+
+      xhr.open('POST', target.url);
+      xhr.send(formData);
     });
-
-    if (!response.ok) {
-      throw new Error(`Failed to upload ${file.name}.`);
-    }
-
-    return;
   }
 
   const formData = new FormData();
   formData.append('file', file);
 
-  const response = await fetch(target.url, {
-    method: 'PUT',
-    body: formData
-  });
+  const xhr = new XMLHttpRequest();
 
-  if (!response.ok) {
-    throw new Error(`Failed to upload ${file.name}.`);
-  }
+  return new Promise((resolve, reject) => {
+    if (xhr.upload && onProgress) {
+      xhr.upload.addEventListener('progress', (event) => {
+        if (event.lengthComputable) {
+          const percentComplete = Math.round((event.loaded / event.total) * 100);
+          onProgress(percentComplete);
+        }
+      });
+    }
+
+    xhr.addEventListener('load', () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve();
+      } else {
+        reject(new Error(`Failed to upload ${file.name}.`));
+      }
+    });
+
+    xhr.addEventListener('error', () => {
+      reject(new Error(`Failed to upload ${file.name}.`));
+    });
+
+    xhr.open('PUT', target.url);
+    xhr.send(formData);
+  });
 }
 
 function buildUploadedAttachment(file, target) {
-  const url = target.fileUrl || target.appUrl || (target.key ? `https://utfs.io/f/${target.key}` : '');
+  const url =
+    (target.key ? `https://utfs.io/f/${target.key}` : '') ||
+    target.appUrl ||
+    (target.fileUrl && !target.fileUrl.includes('ingest.uploadthing.com') ? target.fileUrl : '') ||
+    '';
 
   if (!url) {
     throw new Error('Upload completed without a file URL.');
@@ -174,11 +214,12 @@ function buildUploadedAttachment(file, target) {
     url,
     fileName: target.fileName || target.name || file.name,
     mimeType: file.type || 'application/octet-stream',
-    sizeBytes: file.size
+    sizeBytes: file.size,
+    uploadResponse: target
   };
 }
 
-export async function uploadAttachments(files) {
+export async function uploadAttachments(files, onFileProgress) {
   if (!files.length) return [];
 
   const targets = await requestPresignedUploads(files);
@@ -190,7 +231,8 @@ export async function uploadAttachments(files) {
   const uploaded = await Promise.all(
     files.map(async (file, index) => {
       const target = targets[index];
-      await uploadFileToPresignedTarget(file, target);
+      const onProgress = onFileProgress ? (percent) => onFileProgress(index, percent) : undefined;
+      await uploadFileToPresignedTarget(file, target, onProgress);
       return buildUploadedAttachment(file, target);
     })
   );

@@ -2,6 +2,33 @@ import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
 
 const PROXIED_PATHS = new Set(['/api/specialties', '/api/cases/webhook/case-created']);
+
+function isProxiedPath(requestPath) {
+  if (PROXIED_PATHS.has(requestPath)) return true;
+  // /api/cases/{id}/attachments
+  if (/^\/api\/cases\/[^/]+\/attachments$/.test(requestPath)) return true;
+  return false;
+}
+
+function extractAttachmentsFromWebhookPayload(requestJson) {
+  const data = requestJson?.data;
+  if (!data || typeof data !== 'object') return [];
+  const direct = Array.isArray(data.attachments) ? data.attachments : [];
+  const seen = new Set();
+  const result = [];
+  for (const item of direct) {
+    const url = item?.url || item?.fileUrl || '';
+    if (!url || seen.has(url)) continue;
+    seen.add(url);
+    result.push({
+      url,
+      fileName: item.fileName || item.name || '',
+      mimeType: item.mimeType || item.type || 'application/octet-stream',
+      sizeBytes: item.sizeBytes || item.size || 0
+    });
+  }
+  return result;
+}
 const DEFAULT_UPLOADTHING_PROXY_URL = 'https://telemedicine-dashboard.vercel.app/api/uploadthing';
 const FALLBACK_UPLOADTHING_PROXY_URL = 'https://doctor-telemedicine-server.vercel.app/api/uploadthing';
 
@@ -9,7 +36,7 @@ function getProxyTarget(env) {
   return (env.API_REMOTE_BASE_URL || '').replace(/\/$/, '');
 }
 
-function buildUpstreamHeaders(req, env) {
+function buildUpstreamHeaders(req, env, skipAuth = false) {
   const requestHeaders = req && typeof req.headers === 'object' && req.headers ? req.headers : {};
   const headers = {
     accept: requestHeaders.accept || 'application/json'
@@ -19,11 +46,11 @@ function buildUpstreamHeaders(req, env) {
     headers['content-type'] = requestHeaders['content-type'];
   }
 
-  if (env.API_AUTH_HEADER && env.API_AUTH_VALUE) {
+  if (!skipAuth && env.API_AUTH_HEADER && env.API_AUTH_VALUE) {
     headers[env.API_AUTH_HEADER] = env.API_AUTH_VALUE;
   }
 
-  if (env.API_BEARER_TOKEN) {
+  if (!skipAuth && env.API_BEARER_TOKEN) {
     headers.Authorization = `Bearer ${env.API_BEARER_TOKEN}`;
   }
 
@@ -77,13 +104,13 @@ function normalizeUploadthingResponsePayload(payload, queryString) {
       return {
         ...item,
         fileName: item.fileName || item.name,
-        fileUrl: item.fileUrl || item.url,
+        fileUrl: item.fileUrl && !item.fileUrl.includes('ingest.uploadthing.com') ? item.fileUrl : undefined,
         fields: item.fields && typeof item.fields === 'object' ? item.fields : {},
       };
     });
 
     return JSON.stringify(normalized);
-  } catch {
+  } catch (_e) {
     return payload;
   }
 }
@@ -130,24 +157,62 @@ function createApiProxyPlugin(env) {
       return true;
     }
 
-    if (!target || !PROXIED_PATHS.has(requestPath)) {
+    if (!target || !isProxiedPath(requestPath)) {
       return false;
     }
+
+    const requestBody = await readRequestBody(req);
 
     const upstreamResponse = await fetch(`${target}${requestPath.replace(/^\/api/, '')}`, {
       method: req.method,
       headers: buildUpstreamHeaders(req, env),
-      body: await readRequestBody(req)
+      body: requestBody
     });
 
     res.statusCode = upstreamResponse.status;
+    res.setHeader('content-type', 'application/json');
 
-    const contentType = upstreamResponse.headers.get('content-type');
-    if (contentType) {
-      res.setHeader('content-type', contentType);
+    const contentType = upstreamResponse.headers.get('content-type') || '';
+    const payload = await upstreamResponse.text();
+
+    // For the webhook: post attachments then merge into response
+    if (
+      requestPath === '/api/cases/webhook/case-created' &&
+      upstreamResponse.ok &&
+      contentType.includes('application/json')
+    ) {
+      let responseJson;
+      try { responseJson = JSON.parse(payload); } catch { res.end(payload); return true; }
+
+      let requestJson = null;
+      try {
+        const bodyText = Buffer.isBuffer(requestBody) ? requestBody.toString('utf8') : (requestBody || '');
+        requestJson = JSON.parse(bodyText);
+      } catch { /* ignore */ }
+
+      const caseId = responseJson?.case?.id;
+      const attachments = extractAttachmentsFromWebhookPayload(requestJson);
+
+      if (caseId && attachments.length > 0) {
+        const authHeaders = buildUpstreamHeaders(req, env);
+        const saved = await Promise.all(
+          attachments.map((a) =>
+            fetch(`${target}/cases/${caseId}/attachments`, {
+              method: 'POST',
+              headers: { ...authHeaders, 'content-type': 'application/json' },
+              body: JSON.stringify(a)
+            }).then((r) => r.ok ? r.json() : null).catch(() => null)
+          )
+        );
+        responseJson.case.attachments = saved.filter(Boolean);
+      } else if (responseJson?.case) {
+        responseJson.case.attachments = [];
+      }
+
+      res.end(JSON.stringify(responseJson));
+      return true;
     }
 
-    const payload = await upstreamResponse.text();
     res.end(payload);
     return true;
   }

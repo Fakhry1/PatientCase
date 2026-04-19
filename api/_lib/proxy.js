@@ -33,7 +33,7 @@ async function readRequestBody(req) {
   return chunks.length ? Buffer.concat(chunks) : undefined;
 }
 
-function applyProxyHeaders(req, extraHeaders = {}) {
+function applyProxyHeaders(req, extraHeaders = {}, skipAuth = false) {
   const { authHeader, authValue, bearerToken } = getProxyConfig();
   const headers = {
     accept: req.headers.accept || 'application/json',
@@ -44,18 +44,18 @@ function applyProxyHeaders(req, extraHeaders = {}) {
     headers['content-type'] = req.headers['content-type'];
   }
 
-  if (authHeader && authValue) {
+  if (!skipAuth && authHeader && authValue) {
     headers[authHeader] = authValue;
   }
 
-  if (bearerToken) {
+  if (!skipAuth && bearerToken) {
     headers.Authorization = `Bearer ${bearerToken}`;
   }
 
   return headers;
 }
 
-export async function proxyRequest(req, res, path) {
+export async function proxyRequest(req, res, path, options = {}) {
   const { remoteBaseUrl } = getProxyConfig();
 
   if (!remoteBaseUrl) {
@@ -66,9 +66,10 @@ export async function proxyRequest(req, res, path) {
     return res.status(204).end();
   }
 
+  const skipAuth = options.skipAuth === true;
   const response = await fetch(`${remoteBaseUrl}${path}`, {
     method: req.method,
-    headers: applyProxyHeaders(req),
+    headers: applyProxyHeaders(req, {}, skipAuth),
     body: await readRequestBody(req)
   });
 

@@ -10,12 +10,40 @@ function createId() {
   if (globalThis.crypto?.randomUUID) {
     return globalThis.crypto.randomUUID();
   }
-
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
-export async function buildWebhookPayload(form, attachments = []) {
+export function buildCasePayload(form, attachments = []) {
   const createdAt = new Date().toISOString();
+
+  const normalizedAttachments = attachments
+    .map((attachment) => {
+      const key = attachment?.uploadResponse?.key || attachment?.key || '';
+      const link =
+        attachment?.url ||
+        attachment?.fileUrl ||
+        attachment?.uploadResponse?.url ||
+        attachment?.uploadResponse?.fileUrl ||
+        (key ? `https://utfs.io/f/${key}` : '');
+      const utfsUrl = attachment?.utfsUrl || (key ? `https://utfs.io/f/${key}` : '');
+      if (!link) return null;
+      return {
+        url: link,
+        utfsUrl: utfsUrl || link,
+        fileName: attachment?.fileName || attachment?.uploadResponse?.fileName || attachment?.uploadResponse?.name || '',
+        mimeType: attachment?.mimeType || attachment?.uploadResponse?.type || 'application/octet-stream',
+        sizeBytes: attachment?.sizeBytes || attachment?.uploadResponse?.size || 0
+      };
+    })
+    .filter(Boolean);
+
+  const attachmentUploadResponses = attachments
+    .map((a) => a?.uploadResponse)
+    .filter((r) => r && typeof r === 'object');
+
+  const attachmentsJson = normalizedAttachments.length > 0 ? JSON.stringify(normalizedAttachments) : '';
+  const attachmentResponsesJson = attachmentUploadResponses.length > 0 ? JSON.stringify(attachmentUploadResponses) : '';
+
   const baseData = {
     responseId: createId().slice(0, 8),
     submissionId: createId().slice(0, 8),
@@ -49,14 +77,33 @@ export async function buildWebhookPayload(form, attachments = []) {
         value: [form.specialtyId],
         options: [{ id: form.specialtyId, text: form.specialtyName }]
       },
-      { key: 'question_symptoms', label: 'symptoms', type: 'TEXTAREA', value: form.symptoms }
+      { key: 'question_symptoms', label: 'symptoms', type: 'TEXTAREA', value: form.symptoms },
+      {
+        key: 'question_attachments',
+        label: 'attachments',
+        type: 'TEXTAREA',
+        value: attachmentsJson
+      },
+      {
+        key: 'question_attachment_upload_responses',
+        label: 'attachment_upload_responses',
+        type: 'TEXTAREA',
+        value: attachmentResponsesJson
+      }
     ]
   };
+
+  if (normalizedAttachments.length > 0) {
+    baseData.attachments = normalizedAttachments;
+  }
+  if (attachmentUploadResponses.length > 0) {
+    baseData.attachmentUploadResponses = attachmentUploadResponses;
+  }
 
   return {
     eventId: createId(),
     eventType: 'FORM_RESPONSE',
     createdAt,
-    data: attachments.length > 0 ? { ...baseData, attachments } : baseData
+    data: baseData
   };
 }

@@ -7,7 +7,7 @@ import { COUNTRY_CODES } from './config/countries.js';
 import { initialForm } from './config/form.js';
 import { translations } from './i18n/translations.js';
 import { fetchSpecialties, submitConsultation } from './lib/api.js';
-import { buildWebhookPayload } from './lib/consultationPayload.js';
+import { buildCasePayload } from './lib/consultationPayload.js';
 import { getFullPhoneNumber, getPhoneError } from './lib/phone.js';
 import { mapSpecialties, translateSpecialtyName } from './lib/specialties.js';
 import { ATTACHMENT_LIMITS, formatBytes, uploadAttachments, validateAttachmentSelection } from './lib/attachments.js';
@@ -33,6 +33,7 @@ export default function App() {
   const [attachmentFiles, setAttachmentFiles] = useState([]);
   const [uploadedAttachmentsBySignature, setUploadedAttachmentsBySignature] = useState({});
   const [isUploadingAttachments, setIsUploadingAttachments] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState({});
 
   const t = translations[language];
   const dir = language === 'ar' ? 'rtl' : 'ltr';
@@ -111,9 +112,15 @@ export default function App() {
     if (!filesToUpload.length) return;
 
     setIsUploadingAttachments(true);
+    setUploadProgress({});
 
     try {
-      const uploaded = await uploadAttachments(filesToUpload);
+      const handleProgress = (fileIndex, percent) => {
+        const signature = getAttachmentSignature(filesToUpload[fileIndex]);
+        setUploadProgress((current) => ({ ...current, [signature]: percent }));
+      };
+
+      const uploaded = await uploadAttachments(filesToUpload, handleProgress);
       setUploadedAttachmentsBySignature((current) => {
         const next = { ...current };
         filesToUpload.forEach((file, index) => {
@@ -123,6 +130,7 @@ export default function App() {
         return next;
       });
       setFieldErrors((current) => ({ ...current, attachments: '' }));
+      setUploadProgress({});
     } catch {
       setFieldErrors((current) => ({ ...current, attachments: t.attachmentsUploadError }));
     } finally {
@@ -218,11 +226,12 @@ export default function App() {
         }
       }
 
-      const payload = await buildWebhookPayload(form, attachments);
-      await submitConsultation(payload, t.submissionError);
+      const payload = buildCasePayload(form, attachments);
+      const result = await submitConsultation(payload, t.submissionError);
+      const caseData = result?.case || result;
 
       setSubmissionMeta({
-        reference: payload.eventId.slice(0, 8).toUpperCase(),
+        reference: caseData?.referenceNumber ? String(caseData.referenceNumber) : payload.eventId.slice(0, 8).toUpperCase(),
         specialty: translateSpecialtyName(form.specialtyName, language),
         phone: getFullPhoneNumber(form.countryCode, form.phoneNumber),
       });
@@ -429,20 +438,34 @@ export default function App() {
                   />
                   {attachmentFiles.length > 0 && (
                     <ul className="attachment-list">
-                      {attachmentFiles.map((file, i) => (
-                        <li key={`${file.name}-${file.size}-${file.lastModified}`} className="attachment-item">
-                          <span className="attachment-name">{file.name}</span>
-                          <span className="attachment-size">{formatBytes(file.size)}</span>
-                          <button
-                            type="button"
-                            className="attachment-remove"
-                            onClick={() => handleAttachmentRemove(i)}
-                            disabled={submitState.status === 'loading'}
-                          >
-                            {t.attachmentsRemove}
-                          </button>
-                        </li>
-                      ))}
+                      {attachmentFiles.map((file, i) => {
+                        const signature = getAttachmentSignature(file);
+                        const progress = uploadProgress[signature];
+                        const isUploaded = !!uploadedAttachmentsBySignature[signature];
+                        return (
+                          <li key={`${file.name}-${file.size}-${file.lastModified}`} className="attachment-item">
+                            <span className="attachment-name">{file.name}</span>
+                            <span className="attachment-size">{formatBytes(file.size)}</span>
+                            {progress !== undefined && !isUploaded && (
+                              <div className="attachment-progress">
+                                <div className="progress-bar">
+                                  <div className="progress-fill" style={{ width: `${progress}%` }}></div>
+                                </div>
+                                <span className="progress-text">{progress}%</span>
+                              </div>
+                            )}
+                            {isUploaded && <span className="attachment-status attachment-success">✓</span>}
+                            <button
+                              type="button"
+                              className="attachment-remove"
+                              onClick={() => handleAttachmentRemove(i)}
+                              disabled={submitState.status === 'loading' || progress !== undefined}
+                            >
+                              {t.attachmentsRemove}
+                            </button>
+                          </li>
+                        );
+                      })}
                     </ul>
                   )}
                 </Field>
