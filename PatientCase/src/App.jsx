@@ -7,7 +7,7 @@ import { COUNTRY_CODES } from './config/countries.js';
 import { initialForm } from './config/form.js';
 import { translations } from './i18n/translations.js';
 import { fetchSpecialties, submitConsultation } from './lib/api.js';
-import { buildWebhookPayload } from './lib/consultationPayload.js';
+import { buildCasePayload } from './lib/consultationPayload.js';
 import { getFullPhoneNumber, getPhoneError } from './lib/phone.js';
 import { mapSpecialties, translateSpecialtyName } from './lib/specialties.js';
 import { ATTACHMENT_LIMITS, formatBytes, uploadAttachments, validateAttachmentSelection } from './lib/attachments.js';
@@ -37,26 +37,6 @@ export default function App() {
 
   const t = translations[language];
   const dir = language === 'ar' ? 'rtl' : 'ltr';
-
-  useEffect(() => {
-    document.documentElement.lang = language;
-    document.documentElement.dir = dir;
-    document.title = language === 'ar' ? 'بوابة الاستشارات الطبية' : 'Medical Consultation Portal';
-
-    const description =
-      language === 'ar'
-        ? 'بوابة ثنائية اللغة لطلب الاستشارات الطبية وإرسال بيانات الحالة والمرفقات بشكل آمن.'
-        : 'Bilingual portal for requesting medical consultations and securely submitting case details and attachments.';
-
-    let descriptionTag = document.querySelector('meta[name="description"]');
-    if (!descriptionTag) {
-      descriptionTag = document.createElement('meta');
-      descriptionTag.setAttribute('name', 'description');
-      document.head.appendChild(descriptionTag);
-    }
-
-    descriptionTag.setAttribute('content', description);
-  }, [dir, language]);
 
   useEffect(() => {
     let isActive = true;
@@ -246,11 +226,12 @@ export default function App() {
         }
       }
 
-      const payload = await buildWebhookPayload(form, attachments);
-      await submitConsultation(payload, t.submissionError);
+      const payload = buildCasePayload(form, attachments);
+      const result = await submitConsultation(payload, t.submissionError);
+      const caseData = result?.case || result;
 
       setSubmissionMeta({
-        reference: payload.eventId.slice(0, 8).toUpperCase(),
+        reference: caseData?.referenceNumber ? String(caseData.referenceNumber) : payload.eventId.slice(0, 8).toUpperCase(),
         specialty: translateSpecialtyName(form.specialtyName, language),
         phone: getFullPhoneNumber(form.countryCode, form.phoneNumber),
       });

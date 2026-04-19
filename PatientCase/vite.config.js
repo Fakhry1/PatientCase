@@ -2,6 +2,33 @@ import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
 
 const PROXIED_PATHS = new Set(['/api/specialties', '/api/cases/webhook/case-created']);
+
+function isProxiedPath(requestPath) {
+  if (PROXIED_PATHS.has(requestPath)) return true;
+  // /api/cases/{id}/attachments
+  if (/^\/api\/cases\/[^/]+\/attachments$/.test(requestPath)) return true;
+  return false;
+}
+
+function extractAttachmentsFromWebhookPayload(requestJson) {
+  const data = requestJson?.data;
+  if (!data || typeof data !== 'object') return [];
+  const direct = Array.isArray(data.attachments) ? data.attachments : [];
+  const seen = new Set();
+  const result = [];
+  for (const item of direct) {
+    const url = item?.url || item?.fileUrl || '';
+    if (!url || seen.has(url)) continue;
+    seen.add(url);
+    result.push({
+      url,
+      fileName: item.fileName || item.name || '',
+      mimeType: item.mimeType || item.type || 'application/octet-stream',
+      sizeBytes: item.sizeBytes || item.size || 0
+    });
+  }
+  return result;
+}
 const DEFAULT_UPLOADTHING_PROXY_URL = 'https://telemedicine-dashboard.vercel.app/api/uploadthing';
 const FALLBACK_UPLOADTHING_PROXY_URL = 'https://doctor-telemedicine-server.vercel.app/api/uploadthing';
 
@@ -9,7 +36,7 @@ function getProxyTarget(env) {
   return (env.API_REMOTE_BASE_URL || '').replace(/\/$/, '');
 }
 
-function buildUpstreamHeaders(req, env) {
+function buildUpstreamHeaders(req, env, skipAuth = false) {
   const requestHeaders = req && typeof req.headers === 'object' && req.headers ? req.headers : {};
   const headers = {
     accept: requestHeaders.accept || 'application/json'
@@ -19,11 +46,11 @@ function buildUpstreamHeaders(req, env) {
     headers['content-type'] = requestHeaders['content-type'];
   }
 
-  if (env.API_AUTH_HEADER && env.API_AUTH_VALUE) {
+  if (!skipAuth && env.API_AUTH_HEADER && env.API_AUTH_VALUE) {
     headers[env.API_AUTH_HEADER] = env.API_AUTH_VALUE;
   }
 
-  if (env.API_BEARER_TOKEN) {
+  if (!skipAuth && env.API_BEARER_TOKEN) {
     headers.Authorization = `Bearer ${env.API_BEARER_TOKEN}`;
   }
 
@@ -77,129 +104,19 @@ function normalizeUploadthingResponsePayload(payload, queryString) {
       return {
         ...item,
         fileName: item.fileName || item.name,
-        fileUrl: item.fileUrl || item.url,
+        fileUrl: item.fileUrl && !item.fileUrl.includes('ingest.uploadthing.com') ? item.fileUrl : undefined,
         fields: item.fields && typeof item.fields === 'object' ? item.fields : {},
       };
     });
 
     return JSON.stringify(normalized);
-  } catch {
+  } catch (_e) {
     return payload;
   }
 }
 
 function isMissingUploadthingRoute(response) {
   return response.status === 404 || response.status === 405;
-}
-
-function parseRequestJson(requestBody) {
-  if (!requestBody) return null;
-
-  const text = Buffer.isBuffer(requestBody) ? requestBody.toString('utf8') : String(requestBody);
-  if (!text.trim()) return null;
-
-  try {
-    return JSON.parse(text);
-  } catch {
-    return null;
-  }
-}
-
-function extractAttachmentDebugInfo(requestJson) {
-  const data = requestJson && typeof requestJson === 'object' ? requestJson.data : null;
-  if (!data || typeof data !== 'object') {
-    return { attachments: [], attachmentUploadResponses: [] };
-  }
-
-  const directAttachments = Array.isArray(data.attachments) ? data.attachments : [];
-  const directUploadResponses = Array.isArray(data.attachmentUploadResponses) ? data.attachmentUploadResponses : [];
-
-  let fieldAttachments = [];
-  let fieldAttachmentUploadResponses = [];
-
-  const fields = Array.isArray(data.fields) ? data.fields : [];
-  for (const field of fields) {
-    if (!field || typeof field !== 'object' || typeof field.value !== 'string' || !field.value.trim()) {
-      continue;
-    }
-
-    if (field.key === 'question_attachments') {
-      try {
-        const parsed = JSON.parse(field.value);
-        if (Array.isArray(parsed)) {
-          fieldAttachments = parsed;
-        }
-      } catch {
-        // Ignore invalid JSON in debug field.
-      }
-    }
-
-    if (field.key === 'question_attachment_upload_responses') {
-      try {
-        const parsed = JSON.parse(field.value);
-        if (Array.isArray(parsed)) {
-          fieldAttachmentUploadResponses = parsed;
-        }
-      } catch {
-        // Ignore invalid JSON in debug field.
-      }
-    }
-  }
-
-  return {
-    attachments: directAttachments.length > 0 ? directAttachments : fieldAttachments,
-    attachmentUploadResponses: directUploadResponses.length > 0 ? directUploadResponses : fieldAttachmentUploadResponses
-  };
-}
-
-function normalizeAttachmentList(debugInfo) {
-  const combined = [
-    ...(Array.isArray(debugInfo?.attachments) ? debugInfo.attachments : []),
-    ...(Array.isArray(debugInfo?.attachmentUploadResponses) ? debugInfo.attachmentUploadResponses : [])
-  ];
-
-  const uniqueUrls = new Set();
-  const attachments = [];
-
-  for (const item of combined) {
-    const url =
-      (item && typeof item === 'object' && (item.url || item.fileUrl)) ||
-      (typeof item === 'string' ? item : '');
-    const key = item && typeof item === 'object' ? item.key : '';
-    const utfsUrl =
-      (item && typeof item === 'object' && item.utfsUrl) ||
-      (key ? `https://utfs.io/f/${key}` : '');
-
-    if (!url || uniqueUrls.has(url)) continue;
-    uniqueUrls.add(url);
-    attachments.push({
-      url,
-      utfsUrl: utfsUrl || url
-    });
-  }
-
-  return attachments;
-}
-
-function appendAttachmentEchoToCaseResponse(payload, requestJson) {
-  if (!payload || typeof payload !== 'string') {
-    return payload;
-  }
-
-  try {
-    const responseJson = JSON.parse(payload);
-    const debugInfo = extractAttachmentDebugInfo(requestJson);
-    const attachments = normalizeAttachmentList(debugInfo);
-
-    if (attachments.length > 0) {
-      responseJson.attachments = attachments;
-      responseJson.proxyEchoEnabled = true;
-    }
-
-    return JSON.stringify(responseJson);
-  } catch {
-    return payload;
-  }
 }
 
 function createApiProxyPlugin(env) {
@@ -240,12 +157,11 @@ function createApiProxyPlugin(env) {
       return true;
     }
 
-    if (!target || !PROXIED_PATHS.has(requestPath)) {
+    if (!target || !isProxiedPath(requestPath)) {
       return false;
     }
 
     const requestBody = await readRequestBody(req);
-    const requestJson = requestPath === '/api/cases/webhook/case-created' ? parseRequestJson(requestBody) : null;
 
     const upstreamResponse = await fetch(`${target}${requestPath.replace(/^\/api/, '')}`, {
       method: req.method,
@@ -254,15 +170,47 @@ function createApiProxyPlugin(env) {
     });
 
     res.statusCode = upstreamResponse.status;
+    res.setHeader('content-type', 'application/json');
 
-    const contentType = upstreamResponse.headers.get('content-type');
-    if (contentType) {
-      res.setHeader('content-type', contentType);
-    }
+    const contentType = upstreamResponse.headers.get('content-type') || '';
+    const payload = await upstreamResponse.text();
 
-    let payload = await upstreamResponse.text();
-    if (requestPath === '/api/cases/webhook/case-created') {
-      payload = appendAttachmentEchoToCaseResponse(payload, requestJson);
+    // For the webhook: post attachments then merge into response
+    if (
+      requestPath === '/api/cases/webhook/case-created' &&
+      upstreamResponse.ok &&
+      contentType.includes('application/json')
+    ) {
+      let responseJson;
+      try { responseJson = JSON.parse(payload); } catch { res.end(payload); return true; }
+
+      let requestJson = null;
+      try {
+        const bodyText = Buffer.isBuffer(requestBody) ? requestBody.toString('utf8') : (requestBody || '');
+        requestJson = JSON.parse(bodyText);
+      } catch { /* ignore */ }
+
+      const caseId = responseJson?.case?.id;
+      const attachments = extractAttachmentsFromWebhookPayload(requestJson);
+
+      if (caseId && attachments.length > 0) {
+        const authHeaders = buildUpstreamHeaders(req, env);
+        const saved = await Promise.all(
+          attachments.map((a) =>
+            fetch(`${target}/cases/${caseId}/attachments`, {
+              method: 'POST',
+              headers: { ...authHeaders, 'content-type': 'application/json' },
+              body: JSON.stringify(a)
+            }).then((r) => r.ok ? r.json() : null).catch(() => null)
+          )
+        );
+        responseJson.case.attachments = saved.filter(Boolean);
+      } else if (responseJson?.case) {
+        responseJson.case.attachments = [];
+      }
+
+      res.end(JSON.stringify(responseJson));
+      return true;
     }
 
     res.end(payload);

@@ -7,15 +7,16 @@ async function requestJson(path, options, fallbackMessage) {
 
   if (!response.ok) {
     if (!responseText) {
-      throw new Error(`${fallbackMessage}${response.status ? ` (${response.status})` : ''}`);
+      throw new Error(`${fallbackMessage} (${response.status})`);
     }
 
+    let errorJson;
     try {
-      const json = JSON.parse(responseText);
-      throw new Error(json.message || json.error || `${fallbackMessage} (${response.status})`);
+      errorJson = JSON.parse(responseText);
     } catch {
-      throw new Error(`${fallbackMessage}${response.status ? ` (${response.status})` : ''}: ${responseText}`);
+      throw new Error(`${fallbackMessage} (${response.status}): ${responseText}`);
     }
+    throw new Error(errorJson.message || errorJson.error || `${fallbackMessage} (${response.status})`);
   }
 
   if (!contentType.includes('application/json')) {
@@ -40,10 +41,25 @@ export function submitConsultation(payload, fallbackMessage) {
     '/cases/webhook/case-created',
     {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
+    },
+    fallbackMessage
+  );
+}
+
+export function addCaseAttachment(caseId, attachment, fallbackMessage) {
+  return requestJson(
+    `/cases/${caseId}/attachments`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        url: attachment.url,
+        fileName: attachment.fileName || '',
+        mimeType: attachment.mimeType || 'application/octet-stream',
+        sizeBytes: attachment.sizeBytes || 0
+      })
     },
     fallbackMessage
   );

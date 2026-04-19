@@ -200,7 +200,11 @@ async function uploadFileToPresignedTarget(file, target, onProgress) {
 }
 
 function buildUploadedAttachment(file, target) {
-  const url = target.fileUrl || target.appUrl || (target.key ? `https://utfs.io/f/${target.key}` : '');
+  const url =
+    (target.key ? `https://utfs.io/f/${target.key}` : '') ||
+    target.appUrl ||
+    (target.fileUrl && !target.fileUrl.includes('ingest.uploadthing.com') ? target.fileUrl : '') ||
+    '';
 
   if (!url) {
     throw new Error('Upload completed without a file URL.');
