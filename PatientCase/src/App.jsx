@@ -6,7 +6,7 @@ import SuccessPanel from './components/SuccessPanel.jsx';
 import { COUNTRY_CODES } from './config/countries.js';
 import { initialForm } from './config/form.js';
 import { translations } from './i18n/translations.js';
-import { fetchSpecialties, submitConsultation } from './lib/api.js';
+import { fetchSpecialties, submitConsultation, addCaseAttachment } from './lib/api.js';
 import { buildCasePayload } from './lib/consultationPayload.js';
 import { getFullPhoneNumber, getPhoneError } from './lib/phone.js';
 import { mapSpecialties, translateSpecialtyName } from './lib/specialties.js';
@@ -229,6 +229,14 @@ export default function App() {
       const payload = buildCasePayload(form, attachments);
       const result = await submitConsultation(payload, t.submissionError);
       const caseData = result?.case || result;
+
+      // Persist attachments to the case via the API
+      const caseId = caseData?.id;
+      if (caseId && attachments.length > 0) {
+        await Promise.all(
+          attachments.map((att) => addCaseAttachment(caseId, att, t.submissionError).catch(() => null))
+        );
+      }
 
       setSubmissionMeta({
         reference: caseData?.referenceNumber ? String(caseData.referenceNumber) : payload.eventId.slice(0, 8).toUpperCase(),
