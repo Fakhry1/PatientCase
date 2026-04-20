@@ -4,6 +4,7 @@
   "outputDirectory": "dist",
   "nodeVersion": "20.x",
   "rewrites": [
+    { "source": "/api/cases/webhook/case-created", "destination": "/api/cases-webhook-case-created" },
     { "source": "/((?!api/).*)", "destination": "/index.html" }
   ]
 }
