@@ -1,9 +1,34 @@
-const API_ROOT = '/api';
+const DEFAULT_API_ROOT = '/api';
+const PUBLIC_API_ROOT = (import.meta.env.VITE_PUBLIC_API_ROOT || '').trim().replace(/\/$/, '');
 
-async function requestJson(path, options, fallbackMessage) {
-  const response = await fetch(`${API_ROOT}${path}`, options);
+function buildApiUrl(apiRoot, path) {
+  return `${apiRoot}${path}`;
+}
+
+async function fetchApiResponse(apiRoot, path, options) {
+  const response = await fetch(buildApiUrl(apiRoot, path), options);
   const contentType = response.headers.get('content-type') || '';
   const responseText = await response.text();
+
+  return {
+    response,
+    contentType,
+    responseText
+  };
+}
+
+function shouldRetryWithPublicApiRoot(apiRoot, contentType) {
+  return apiRoot === DEFAULT_API_ROOT && !!PUBLIC_API_ROOT && !contentType.includes('application/json');
+}
+
+async function requestJson(path, options, fallbackMessage) {
+  let apiRoot = DEFAULT_API_ROOT;
+  let { response, contentType, responseText } = await fetchApiResponse(apiRoot, path, options);
+
+  if (shouldRetryWithPublicApiRoot(apiRoot, contentType)) {
+    apiRoot = PUBLIC_API_ROOT;
+    ({ response, contentType, responseText } = await fetchApiResponse(apiRoot, path, options));
+  }
 
   if (!response.ok) {
     if (!responseText) {
@@ -21,7 +46,7 @@ async function requestJson(path, options, fallbackMessage) {
 
   if (!contentType.includes('application/json')) {
     throw new Error(
-      `${fallbackMessage}: The API returned HTML instead of JSON. Start the app with npm run dev or npm run preview after configuring the local proxy, or deploy it behind the configured server proxy.`
+      `${fallbackMessage}: The API returned HTML instead of JSON. Start the app with npm run dev or npm run preview after configuring the local proxy, deploy it behind the configured server proxy, or set VITE_PUBLIC_API_ROOT to a reachable deployed /api base.`
     );
   }
 

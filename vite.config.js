@@ -29,6 +29,83 @@ function extractAttachmentsFromWebhookPayload(requestJson) {
   }
   return result;
 }
+
+function getAttachmentSyncHint(env) {
+  if (env.API_AUTH_VALUE || env.API_BEARER_TOKEN) {
+    return 'The upstream attachment endpoint rejected one or more files.';
+  }
+
+  return 'The upstream attachment endpoint likely requires API_AUTH_VALUE or API_BEARER_TOKEN.';
+}
+
+async function postCaseAttachment(target, caseId, attachment, headers) {
+  try {
+    const response = await fetch(`${target}/cases/${caseId}/attachments`, {
+      method: 'POST',
+      headers: { ...headers, 'content-type': 'application/json' },
+      body: JSON.stringify(attachment)
+    });
+
+    const payload = await response.text();
+    let parsed = null;
+    try {
+      parsed = payload ? JSON.parse(payload) : null;
+    } catch {
+      parsed = null;
+    }
+
+    if (!response.ok) {
+      return {
+        ok: false,
+        status: response.status,
+        error: parsed?.message || parsed?.error || payload || `Attachment request failed with status ${response.status}.`,
+        attachment: {
+          url: attachment.url,
+          fileName: attachment.fileName || ''
+        }
+      };
+    }
+
+    return {
+      ok: true,
+      value: parsed
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      status: 0,
+      error: error instanceof Error ? error.message : 'Attachment request failed.',
+      attachment: {
+        url: attachment.url,
+        fileName: attachment.fileName || ''
+      }
+    };
+  }
+}
+
+async function syncCaseAttachments(target, caseId, attachments, headers, env) {
+  const results = await Promise.all(
+    attachments.map((attachment) => postCaseAttachment(target, caseId, attachment, headers))
+  );
+
+  const saved = results
+    .filter((result) => result.ok && result.value)
+    .map((result) => result.value);
+  const failures = results
+    .filter((result) => !result.ok)
+    .map(({ status, error, attachment }) => ({ status, error, attachment }));
+
+  return {
+    saved,
+    failures,
+    summary: {
+      attempted: attachments.length,
+      saved: saved.length,
+      failed: failures.length,
+      hint: failures.length > 0 ? getAttachmentSyncHint(env) : ''
+    }
+  };
+}
 const DEFAULT_UPLOADTHING_PROXY_URL = 'https://telemedicine-dashboard.vercel.app/api/uploadthing';
 const FALLBACK_UPLOADTHING_PROXY_URL = 'https://doctor-telemedicine-server.vercel.app/api/uploadthing';
 
@@ -195,16 +272,14 @@ function createApiProxyPlugin(env) {
 
       if (caseId && attachments.length > 0) {
         const authHeaders = buildUpstreamHeaders(req, env);
-        const saved = await Promise.all(
-          attachments.map((a) =>
-            fetch(`${target}/cases/${caseId}/attachments`, {
-              method: 'POST',
-              headers: { ...authHeaders, 'content-type': 'application/json' },
-              body: JSON.stringify(a)
-            }).then((r) => r.ok ? r.json() : null).catch(() => null)
-          )
-        );
-        responseJson.case.attachments = saved.filter(Boolean);
+        const attachmentSync = await syncCaseAttachments(target, caseId, attachments, authHeaders, env);
+        responseJson.case.attachments = attachmentSync.saved;
+        if (attachmentSync.failures.length > 0) {
+          responseJson.attachmentSync = {
+            ...attachmentSync.summary,
+            failures: attachmentSync.failures
+          };
+        }
       } else if (responseJson?.case) {
         responseJson.case.attachments = [];
       }

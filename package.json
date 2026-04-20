@@ -14,7 +14,6 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "node-fetch": "^3.3.2",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "uploadthing": "^6.12.0"
